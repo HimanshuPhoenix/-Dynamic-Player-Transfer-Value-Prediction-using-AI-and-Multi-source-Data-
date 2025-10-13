@@ -311,3 +311,8 @@
   Comprehensive Technical Report - TransferIQ - Final
 
   Final Model deployed at: https://model-deploy.streamlit.app/
+
+**13th October 2025:**
+----------------------------------------------------------------------------------------------------------  
+
+  Developed multi page app to demonstrate Hyper Parameter Tuning and Forecast

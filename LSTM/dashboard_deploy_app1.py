@@ -18,7 +18,6 @@ import plotly.graph_objects as go
 import requests
 from bs4 import BeautifulSoup
 
-
 #To track script re-run
 #st.write("Script re-run at:", pd.Timestamp.now())
 
@@ -53,7 +52,6 @@ def inverse_transform_col_series(col_scaled, scaler, n_features_total):
 
 # ---------- Build Seq2Seq Training Model ----------
 
-@st.cache_resource
 def build_seq2seq_train(n_steps, n_features, n_future, latent_dim=64):
     # Encoder
     encoder_inputs = Input(shape=(n_steps, n_features), name="encoder_inputs")
@@ -74,7 +72,6 @@ def build_seq2seq_train(n_steps, n_features, n_future, latent_dim=64):
 
 
 # ---------- Build Seq2Seq Inference Models ----------
-@st.cache_resource
 def build_seq2seq_inference_models(train_model, n_steps, n_features, latent_dim=64):
     # Encoder Model
     encoder_inputs = Input(shape=(n_steps, n_features), name="encoder_inputs_inference")
@@ -250,7 +247,41 @@ player_options = df.sort_values("player_name").apply(
 ).unique().tolist()
 
 # To Load Player Profile Pic from Transfermrkt
+import streamlit as st
+import requests
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+
+# Thread pool for background fetching
+executor = ThreadPoolExecutor(max_workers=2)
+
+@lru_cache(maxsize=128)
 def get_player_image_url(player_id):
+    """Fetch player image URL (cached)."""
+    url = f"https://www.transfermarkt.com/-/profil/spieler/{player_id}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    #try:
+    response = requests.get(url, headers=headers, timeout=10)
+    if response.status_code != 200:
+        return response.text
+    soup = BeautifulSoup(response.text, "html.parser")
+    img_tag = soup.find("img", class_="data-header__profile-image")
+    if img_tag and "src" in img_tag.attrs:
+        return img_tag["src"]
+    #except requests.RequestException as e:
+    #    return (f"error: {e}")
+    #return None
+
+def async_load_image(player_id, placeholder, caption):
+    """Load image asynchronously and update placeholder."""
+    img_url = get_player_image_url(player_id)
+    if img_url:
+        placeholder.image(img_url, width=160, caption=caption)
+    else:
+        placeholder.image("default_player.png", width=160, caption="No image available")
+
+def get_player_image_url1(player_id):
     url = f"https://www.transfermarkt.com/-/profil/spieler/{player_id}"
     headers = {"User-Agent": "Mozilla/5.0"}
     response = requests.get(url, headers=headers)
@@ -267,9 +298,21 @@ if mode=="Select Existing Player":
     player_choice = st.sidebar.selectbox("Select Player", player_options)
     pid = int(player_choice.split("(")[-1].replace(")", ""))
     # To Load Player Profile Pic from Transfermrkt
-    #DEFAULT_PLAYER_IMG = "https://upload.wikimedia.org/wikipedia/commons/9/99/Sample_User_Icon.png"
-    DEFAULT_PLAYER_IMG = "https://i.gifer.com/ZKZx.gif"
-    player_image=st.sidebar.image(DEFAULT_PLAYER_IMG, width=160, caption="Loading Player Picture")
+    #img_url = get_player_image_url(pid)
+    #try:
+    #    st.sidebar.image(img_url, width=160, caption=player_choice)
+    #except Exception as e:
+    #    st.write(f"Error: {e}")
+
+    player_id = pid
+    player_name = player_choice
+
+    # Placeholder for image
+    img_placeholder = st.empty()
+    img_placeholder.info("Loading player image...")
+
+    # Run background loading
+    executor.submit(async_load_image, player_id, img_placeholder, player_name)
 
 # Compute mean and max for comparison table
 feature_means = df[
@@ -377,8 +420,8 @@ decoder_input_val = np.zeros((y_val.shape[0], n_future, 1))
 decoder_input_val[:, 1:, 0] = y_val[:, :-1]
 
 # Build and train Seq2Seq
-#latent_dim = 64
-#seq2seq = build_seq2seq_train(n_steps, X.shape[2], n_future, latent_dim=latent_dim)
+latent_dim = 64
+seq2seq = build_seq2seq_train(n_steps, X.shape[2], n_future, latent_dim=latent_dim)
 
 #st.subheader("Training Seq2Seq Encoder-Decoder LSTM (with teacher forcing)")
 
@@ -508,7 +551,6 @@ def retrain_final_seq2seq(X_train, decoder_input_train, y_train, X_val, decoder_
     return train_model, encoder_model_inf, decoder_model_inf, history
 
 # Retrain final XGBoost per step using best params if present, else defaults
-@st.cache_resource
 def retrain_final_xgboost_per_step(X_train_flat, y_train, X_val_flat, y_val, best_params_per_step=None):
     xgb_models_final = []
     n_future_local = y_train.shape[1]
@@ -566,6 +608,7 @@ if st.session_state.trained == False:
             "learning_rate": float(best_lstm_row.get("learning_rate", 0.001))
         }
 
+    
     final_seq_model, encoder_model_inf, decoder_model_inf, history_final = retrain_final_seq2seq(
         X_train, decoder_input_train, y_train, X_val, decoder_input_val, y_val,
         best_params=best_lstm_params, epochs_final=epochs_final
@@ -753,7 +796,6 @@ if st.session_state.trained:
     encoder_model = st.session_state.encoder_model_inf
     decoder_model = st.session_state.decoder_model_inf
     xgb_models = st.session_state.xgb_models_final
-    final_seq_model=st.session_state.final_seq_model
 
     st.divider()
     # -------------------- Download Buttons --------------------
@@ -762,8 +804,7 @@ if st.session_state.trained:
 
     with col1:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".h5") as temp_lstm_file:
-            #seq2seq.save(temp_lstm_file.name)
-            final_seq_model.save(temp_lstm_file.name)
+            seq2seq.save(temp_lstm_file.name)
         ste.download_button(
             label="Download LSTM Seq2Seq Model",
             data=open(temp_lstm_file.name, "rb").read(),
@@ -1241,11 +1282,5 @@ if 'generate_custom_forecast' in globals():
                 st.empty()
     prog_ui.progress(7/7)
 
-if mode=="Select Existing Player":
-    img_url = get_player_image_url(pid)
-    try:
-        player_image.image(img_url, width=160, caption=player_choice)
-    except Exception as e:
-        st.write(f"Error: {e}")
 # Close DB connection
 db.close()
